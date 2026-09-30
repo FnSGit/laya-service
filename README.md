@@ -4,6 +4,7 @@ Laya 判别式决策模型的本地 HTTP 服务，供其他 agent 调用。
 
 - 模型：[convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya)（Apache-2.0，TypeSafe Jev 开源复刻）
 - 特点：意图识别 / 路由分流 / 护栏判定，单次前向毫秒级，输出结构化概率，不做文本生成
+- 协议：**TypeSafe Jev `/v1/systemone` wire 协议**，现成 Jev 客户端（如 hs-jev）把 `baseUrl` 指到本服务即可用
 - 设备：Apple Silicon MPS（fp16），权重常驻统一内存
 
 ## 启动
@@ -17,25 +18,29 @@ Laya 判别式决策模型的本地 HTTP 服务，供其他 agent 调用。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `LAYA_PORT` | 8399 | 监听端口 |
+| `LAYA_PORT` | 8399 | 监听端口（由 start.sh 传给 uvicorn） |
 | `LAYA_HOST` | 127.0.0.1 | 监听地址；供局域网访问时改 0.0.0.0 |
 | `LAYA_DEVICE` | mps | 推理设备 |
-| `LAYA_MODELS` | english,multilingual | 加载分支，可加 `typed-decisions` |
-| `LAYA_API_KEY` | 空 | 设置后请求需带 `Authorization: Bearer <key>` |
+| `LAYA_MODELS` | english,multilingual | 预加载分支，可加 `typed-decisions` |
+| `LAYA_API_KEY` | 空 | 设置后判定接口需带 `Authorization: Bearer <key>` |
+| `LAYA_MAX_LOADED` | Router 默认（2） | 常驻分支数上限（预加载的不受影响） |
+| `LAYA_PRELOAD` | 1 | 启动即预加载；置 0 则首次请求时才加载 |
 
-## 接口
+## 接口（TypeSafe Jev wire 协议）
+
+由 laya 包官方的 `laya.serve` 实现，含请求限流与全部输入防护。
 
 ### GET /health
 
 ```bash
 curl -s http://127.0.0.1:8399/health | jq
-# {"status":"ok","device":"mps","branches":["english","multilingual"]}
+# {"status":"ok","loaded":["english","multilingual"],"device":"mps",...}
 ```
 
-### POST /predict
+### POST /v1/systemone（单条判定）
 
 ```bash
-curl -s -X POST http://127.0.0.1:8399/predict \
+curl -s -X POST http://127.0.0.1:8399/v1/systemone \
   -H 'Content-Type: application/json' \
   -d '{
     "state": {
@@ -58,21 +63,42 @@ curl -s -X POST http://127.0.0.1:8399/predict \
   }' | jq '.answers.department'
 ```
 
-返回（节选）：
+返回（节选）——顶层为 `{model, answers, usage, routing}`：
 
 ```json
 {
   "choice": "billing",
-  "probabilities": { "billing": 0.99, "technical": 0.004, "...": "..." },
-  "confidence": 0.99
+  "probabilities": { "billing": 1.0, "technical": 0.0, "...": "..." },
+  "confidence": 0.9998,
+  "answer_confidence": 1.0
 }
 ```
 
 - `state`：任意 JSON（文本或结构化字段），是模型要判定的输入
-- `questions`：题目字典，`type` 支持 `choice`（单选）/ `score`（打分）/ `boolean`（中文建议改双选项 choice）
-- `model`：可选，强制指定分支（`english` / `multilingual` / `typed-decisions`），一般不传，自动按语种分流
-- 门控读 `confidence`，不要读 `action.act_probability`（恒为 1.0）
-- 中文场景置信度偏高，自动放行阈值建议 ≥ 0.95
+- `questions`：题目字典，`type` 支持 `choice`（单选）/ `score`（打分，criteria 为级别描述列表）/ `noul`（布尔；中文场景建议改双选项 choice）
+- `model`：可选，指定分支（`english` / `multilingual` / `typed-decisions`）；未知值（如 Jev 客户端传的 `jev-1`）自动视为不指定，按语种分流
+- 其余可选控制字段：`max_len` / `head_max_len`（token 预算）、`lang` / `lang_guess`、`min_confidence`（低置信返回 abstain 类结果）
+- `routing.model` 是实际使用的分支；中文为主自动走 multilingual
+
+### POST /v1/systemone/batch（批量）
+
+```json
+{ "states": [ /* 最多 64 个 state */ ], "questions": { /* 同上 */ } }
+```
+
+返回 `{ "results": [...], "total_usage": { "input_tokens": N, ... } }`。
+
+### 限制与错误码
+
+| 码 | 场景 |
+|---|---|
+| 400 | body 不是对象或缺 `questions` |
+| 401 | `LAYA_API_KEY` 已设置但未携带/带错 Bearer Token |
+| 413 | 单题 choice 选项超过 100 |
+| 422 | 题目畸形、选项放不下 token 预算、score 级别缺描述 |
+| 503 | 模型忙（并发满），响应带 `Retry-After: 1` |
+
+其余限制：`state` ≤ 50000 字符、≤ 64 题、body ≤ 2MB；成功响应带 `Server-Timing: inference;dur=...` 头。
 
 ## 常驻（launchd）
 
@@ -97,5 +123,7 @@ plist 副本在本仓库内（com.ai-models.laya-service.plist），换机时可
 
 ## 注意
 
-- 首次前向约 1.6s（MPS/CUDA 初始化预热），服务启动后建议先空跑一条
+- **v0.1 的自定义 `/predict` 端点已移除**，统一走 Jev 协议 `/v1/systemone`
+- 权重在启动时预加载，端口在就绪后才监听（约 10s）；首次前向仍有约 1.6s 的 MPS 预热，服务启动后建议先空跑一条
 - `state`/`questions` 会参与语言检测：中文为主自动走 multilingual 分支
+- 门控建议读 `answer_confidence`（所报答案的校准概率）；`confidence` 是 1−归一化熵（分布集中度），语义与 Jev 的 confidence 不同，Jev 阈值不能直接搬。中文场景自动放行阈值建议 ≥ 0.95，最好按自己的数据重校
