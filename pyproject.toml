@@ -1,0 +1,10 @@
+[project]
+name = "laya-service"
+version = "0.1.0"
+description = "Laya 决策模型本地 HTTP 服务"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "laya>=0.3.22",
+    "uvicorn[standard]>=0.30",
+]
