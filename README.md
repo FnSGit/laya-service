@@ -74,6 +74,27 @@ curl -s -X POST http://127.0.0.1:8399/predict \
 - 门控读 `confidence`，不要读 `action.act_probability`（恒为 1.0）
 - 中文场景置信度偏高，自动放行阈值建议 ≥ 0.95
 
+## 常驻（launchd）
+
+已配置 LaunchAgent：登录自启 + 崩溃自动拉起（KeepAlive）。
+
+```bash
+# 加载（首次安装后执行一次）
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ai-models.laya-service.plist
+
+# 卸载
+launchctl bootout gui/$(id -u)/com.ai-models.laya-service
+
+# 重启服务
+launchctl kickstart -k gui/$(id -u)/com.ai-models.laya-service
+
+# 查看状态
+launchctl print gui/$(id -u)/com.ai-models.laya-service | rg state
+```
+
+日志：`/tmp/laya-service.log`（stdout）+ `/tmp/laya-service.err.log`（stderr）。
+plist 副本在本仓库内（com.ai-models.laya-service.plist），换机时可拷贝到 `~/Library/LaunchAgents/` 后执行加载命令。
+
 ## 注意
 
 - 首次前向约 1.6s（MPS/CUDA 初始化预热），服务启动后建议先空跑一条
