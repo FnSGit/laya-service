@@ -4,7 +4,7 @@
 > 单模块 Python 项目：FastAPI + Apple Silicon MPS（fp16），毫秒级判别式推理，不做文本生成。
 > 暴露 **TypeSafe Jev `/v1/systemone` wire 协议**，现成 Jev 客户端改 baseUrl 即用。
 
-最后更新：2026-09-30 14:06 CST（由 `/init-project` 生成；同日协议切换为 Jev wire 协议）
+最后更新：2026-09-30 19:47 CST（新增「上下文与 token 预算」：实测容量、截断行为、预算分层）
 
 ---
 
@@ -102,6 +102,31 @@ curl -s http://127.0.0.1:8399/health
 ### POST /v1/systemone/batch（批量）
 
 `{states: [...≤64], questions, model?}` → `{results: [...], total_usage: {input_tokens, ...}}`。
+
+### 上下文与 token 预算（源码+实测验证）
+
+`state` 支持文本 / JSON 对象 / **对话轮次列表**三种形态；服务端**无状态、无会话概念**，多轮上下文完全由调用方每次重传，服务不保存历史。
+
+- **无条数/每条限制**：列表被 `json.dumps` 压平成单个字符串整体判定，仅校验 `state` ≤ 50000 字符（`serve.py: MAX_STATE_CHARS`）；不存在轮数/每轮 token 校验
+- **无角色概念**：tokenizer 特殊 token 仅 `[CLS]/[SEP]/[MASK]/[PAD]/[UNK]`；`role`/`content` 只是微调学到的普通 JSON 字段（`common.py: serialize_state` 无模板）
+- **序列格式**：`[CLS] 题干 [SEP] [MASK]选项… [SEP] state [SEP]` —— **state 在最末尾**，题干+选项（`head_max_len`）优先占预算
+- **截断按形态分流**：list → 左截断保留最新（`agent.py: truncate_left = isinstance(state, list)`）；str/dict → 右截断保留开头
+- **截断是 token 粒度，轮次边界不参与**：一条消息可被从中间切开（实测 10 轮超预算时第 6 轮被切中段）——轮次裁剪/摘要压缩由调用方负责
+- **usage 可观测**：`state_tokens`（全量）/ `state_tokens_dropped` / `truncated` / `truncated_questions`；实际用量 = `state_tokens − state_tokens_dropped`
+
+预算分层（源码验证）：
+
+| 层级 | 值 | 出处 |
+|---|---|---|
+| 模型硬上限 | 8192 | ModernBERT/mmBERT `max_position_embeddings` |
+| 服务准入 | 8192 | `LAYA_MAX_TOKEN_BUDGET`（超出 422） |
+| 分支默认 `max_len` | 512 / 1024 / 1024 | 各分支 `rl_agent_config.json`（english / multilingual / typed-decisions） |
+| 分支 `head_max_len` | 192 / 256 / 256 | 同上 |
+| state 实际可用 | ≈ `max_len − head_max_len − 1` | `common.py: build_sequence` 的 `room` |
+
+实测容量（multilingual 默认 ≈ 991 token）：20 轮短对话（571 token）不截断；40 轮（1151 token）丢 160。中文默认走 multilingual，**需要更长上下文必须显式传 `max_len`**（≤ 8192）。
+
+> laya 包的 `predict_long`（超长 state 滑窗扫描+聚合）**未暴露到 HTTP**；长 state 超出 `max_len` 的部分被直接丢弃。
 
 ## 六、环境变量
 

@@ -88,6 +88,30 @@ curl -s -X POST http://127.0.0.1:8399/v1/systemone \
 
 返回 `{ "results": [...], "total_usage": { "input_tokens": N, ... } }`。
 
+### 上下文与 token 预算
+
+`state` 支持三种形态：文本字符串、JSON 对象、**对话轮次列表**（list）。服务端无状态、无会话概念——多轮上下文完全由调用方每次请求重新拼进 `state`，服务不保存历史。
+
+- **无条数/每条限制**：列表会被 `json.dumps` 压平成一个字符串整体参与判定，不存在「最多多少轮」「每轮多少 token」校验（仅 `state` ≤ 50000 字符）
+- **没有角色概念**：tokenizer 无任何 role 特殊 token（只有 `[CLS]/[SEP]/[MASK]/[PAD]/[UNK]`），`role`/`content` 只是模型微调时学到的普通 JSON 字段；序列格式为 `[CLS] 题干 [SEP] [MASK]选项… [SEP] state [SEP]`，**state 排在最末尾**（题干+选项优先占预算）
+- **截断方向按形态区分**：列表（对话）→ 左截断保留最新内容；字符串/对象（文档）→ 右截断保留开头
+- **截断是 token 粒度，轮次边界不参与**：超预算时一条消息可能被从中间切开——轮次裁剪/摘要压缩需调用方自己做
+- **可观测**：`usage` 含 `state_tokens`（全量）/ `state_tokens_dropped` / `truncated` / `truncated_questions`；实际用量 = `state_tokens − state_tokens_dropped`
+
+token 预算分层：
+
+| 层级 | 值 | 说明 |
+|---|---|---|
+| 模型硬上限 | 8192 | ModernBERT/mmBERT `max_position_embeddings` |
+| 服务准入 | 8192 | `LAYA_MAX_TOKEN_BUDGET`，`max_len` 超出报 422 |
+| 分支默认 `max_len` | 512 / 1024 / 1024 | english / multilingual / typed-decisions |
+| 分支 `head_max_len` | 192 / 256 / 256 | 题干+选项占用 |
+| state 实际可用 | ≈ `max_len − head_max_len − 1` | multilingual 默认约 991 token |
+
+容量参考（multilingual 默认额度 ≈ 991 token）：20 轮短对话（571 token）不截断，40 轮（1151 token）即丢 160 token。中文请求默认走 multilingual，**需要更长上下文必须显式传 `max_len`**（最高 8192）。
+
+> laya 包另有 `predict_long`（超长 state 滑窗扫描+按题型聚合，choice 取最自信窗口），未暴露到 HTTP——长 state 超出 `max_len` 的部分会被直接丢弃。
+
 ### 限制与错误码
 
 | 码 | 场景 |
