@@ -4,7 +4,7 @@
 > 单模块 Python 项目：FastAPI + Apple Silicon MPS（fp16），毫秒级判别式推理，不做文本生成。
 > 暴露 **TypeSafe Jev `/v1/systemone` wire 协议**，现成 Jev 客户端改 baseUrl 即用。
 
-最后更新：2026-09-30 19:47 CST（新增「上下文与 token 预算」：实测容量、截断行为、预算分层）
+最后更新：2026-09-30 20:10 CST（推荐配置落地 start.sh；新增 DESIGN.md 设计备忘：predict_long 路由与窗口复用方案）
 
 ---
 
@@ -48,6 +48,7 @@ flowchart LR
 | 文件 | 说明 |
 |---|---|
 | `server.py` | 薄装配层（30 行）：默认值注入（`LAYA_DEVICE`/`LAYA_MODELS`）+ `create_app()`。端点、鉴权、限流均来自 laya.serve 官方实现 |
+| `DESIGN.md` | 设计备忘：已调研未实装的方案（`/v1/systemone/long` 长文档路由、窗口评分复用），含源码依据与实测数据，采用时直接按其实施 |
 | `start.sh` | 启动脚本：`uv run uvicorn server:app`，内含 `HF_HUB_DISABLE_XET=1` 与镜像注释 |
 | `com.ai-models.laya-service.plist` | launchd LaunchAgent 定义（换机时拷到 `~/Library/LaunchAgents/`） |
 | `pyproject.toml` | 项目元数据与依赖（fastapi / laya / uvicorn[standard]，Python ≥ 3.12） |
@@ -173,7 +174,7 @@ tail -f /tmp/laya-service.log /tmp/laya-service.err.log
 
 ## 九、初始化覆盖率
 
-- **已扫描**：7/7 个文本文件（100%）——`server.py`、`start.sh`、`pyproject.toml`、`README.md`、`com.ai-models.laya-service.plist`、`.gitignore`、`.python-version`（2026-09-30 14:06 复核，含协议切换）
+- **已扫描**：8/8 个文本文件（100%）——`server.py`、`start.sh`、`pyproject.toml`、`README.md`、`com.ai-models.laya-service.plist`、`.gitignore`、`.python-version`、`DESIGN.md`（2026-09-30 20:10 复核，含推荐配置落地与设计备忘）
 - **忽略**：`.venv/`、`__pycache__/`（生成物）、`uv.lock`（锁文件）、`.git`
 - **模块识别**：1 个（根即模块），子模块 0 个
 - **缺口**：无。仓库已全覆盖，无待补扫路径；未来若拆分出子模块，重跑 `/init-project` 做增量更新即可
